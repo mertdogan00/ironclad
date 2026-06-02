@@ -1,0 +1,5 @@
+# local-only scratch / reference material
+temp/
+
+# editor / OS noise
+.DS_Store
