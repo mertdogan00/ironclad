@@ -63,6 +63,19 @@ yourself out).
 
 Re-running is safe — ironclad inspects the real system state and only changes what's off.
 
+## Verify it worked
+
+After a run, fetch the **read-only** checker and see what passed — it changes nothing:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mertdogan00/ironclad/main/check.sh | sudo bash
+```
+
+It walks the same ground `init.sh` covers — NTP, firewall, SSH hardening, fail2ban,
+sysctl, `/tmp` lockdown, auditd, Docker — and prints a ✓/✗ per item plus a
+`passed · failed · skipped` summary, so you can tell at a glance what's solid and
+what needs a look. (Run it with `sudo`; several checks read root-only config.)
+
 ## Configuration
 
 Everything is set through environment variables. **Only two are required:**

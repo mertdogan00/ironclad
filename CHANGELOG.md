@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `check.sh` — read-only post-install health check (curl-and-run). Verifies what `init.sh` set
+  up (NTP, firewall, SSH hardening, fail2ban, sysctl, `/tmp` lockdown, auditd, Docker) and prints
+  a ✓/✗ summary; changes nothing.
+
 ### Planned
 
 - Step 16 — monitoring: cron health-check (disk / CPU / RAM / service) → webhook or mail alert
