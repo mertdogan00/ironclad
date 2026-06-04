@@ -43,7 +43,9 @@ SWAP_SIZE_MB="${SWAP_SIZE_MB:-}"         # swapfile size in MB (empty = auto fro
 SWAP_SWAPPINESS="${SWAP_SWAPPINESS:-60}" # kernel default; override lower (e.g. 10) for latency
 
 # --- docker ---
-INSTALL_DOCKER="${INSTALL_DOCKER:-yes}"  # install docker engine (set to "no" to skip step 14)
+INSTALL_DOCKER="${INSTALL_DOCKER:-yes}"            # install docker engine (set to "no" to skip step 14)
+DOCKER_LOG_MAX_SIZE="${DOCKER_LOG_MAX_SIZE:-50m}"  # per-container log size before it rotates (json-file)
+DOCKER_LOG_MAX_FILE="${DOCKER_LOG_MAX_FILE:-3}"    # how many rotated log files to keep per container
 
 # --- shell ---
 SETUP_SHELL="${SETUP_SHELL:-yes}"        # colored prompt + aliases for the login user ("no" = skip step 15)
@@ -654,9 +656,39 @@ docker() {
     ok "docker installed"
   fi
 
-  # make sure it's enabled at boot and running
-  systemctl enable --now docker >/dev/null 2>&1
-  ok "docker service enabled & running"
+  # log rotation — cap container logs so they can't fill the disk. Critical on a
+  # stateless host: by default json-file logs grow unbounded until the box is full.
+  # Written wholesale (fresh-host assumption); applies to newly created containers,
+  # picked up by the daemon restart below.
+  local daemon_changed=0
+  install -d -m 755 /etc/docker
+  local f_daemon="/etc/docker/daemon.json" want_daemon
+  printf -v want_daemon '%s\n' \
+    '{' \
+    '  "log-driver": "json-file",' \
+    '  "log-opts": {' \
+    "    \"max-size\": \"${DOCKER_LOG_MAX_SIZE}\"," \
+    "    \"max-file\": \"${DOCKER_LOG_MAX_FILE}\"" \
+    '  }' \
+    '}'
+  want_daemon=${want_daemon%$'\n'}                 # drop trailing newline
+  if [[ -f "$f_daemon" && "$(cat "$f_daemon")" == "$want_daemon" ]]; then
+    ok "log rotation already set (json-file ${DOCKER_LOG_MAX_SIZE} x${DOCKER_LOG_MAX_FILE})"
+  else
+    printf '%s\n' "$want_daemon" > "$f_daemon"
+    ok "log rotation set (json-file ${DOCKER_LOG_MAX_SIZE} x${DOCKER_LOG_MAX_FILE})"
+    daemon_changed=1
+  fi
+
+  # enable at boot; restart only when daemon.json changed, else just ensure it's up
+  systemctl enable docker >/dev/null 2>&1
+  if [[ "$daemon_changed" -eq 1 ]]; then
+    systemctl restart docker
+    ok "docker enabled & restarted (applied log rotation)"
+  else
+    systemctl start docker >/dev/null 2>&1 || true
+    ok "docker service enabled & running"
+  fi
 
   # add the login user to the docker group (docker group ~= root — intended trade-off)
   if [[ -n "$USERNAME" ]] && id "$USERNAME" >/dev/null 2>&1; then
