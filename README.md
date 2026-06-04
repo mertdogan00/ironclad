@@ -14,20 +14,23 @@ elsewhere, e.g. AWS) — the goal is to keep the app infrastructure solid.
 
 ## Quick start
 
+
+
 Fetch the script onto the server and run it as **root**. With `curl`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mertdogan00/ironclad/main/init.sh -o init.sh
 ```
 
+
 …or with `wget`:
+
 
 ```bash
 wget -qO init.sh https://raw.githubusercontent.com/mertdogan00/ironclad/main/init.sh
 ```
 
-Give it a quick read (it's one file, and it's about to harden your box), then run it, passing
-config as environment variables:
+Give it a quick read (it's one file, and it's about to harden your box), then run it, passing config as environment variables:
 
 ```bash
 USERNAME=mert \
@@ -35,8 +38,28 @@ SSH_PUBKEY="ssh-ed25519 AAAA... you@laptop" \
 sudo -E bash init.sh
 ```
 
-> **`sudo -E`** keeps your environment variables; without `-E` the `USERNAME=…`/`SSH_PUBKEY=…`
-> values are dropped before the script sees them.
+> **`sudo -E`** keeps your environment variables; without `-E` the `USERNAME=…`/`SSH_PUBKEY=…` values are dropped before the script sees them.
+
+### Run from an init script
+
+If your hosting provider supports init scripts, cloud-init, user-data, or first-boot provisioning, you can automatically fetch and run ironclad during server initialization:
+
+```bash
+#!/bin/bash
+set -e
+
+curl -fsSL https://raw.githubusercontent.com/mertdogan00/ironclad/main/init.sh -o /root/ironclad-init.sh
+
+USERNAME=myuser \
+SSH_PUBKEY="ssh-ed25519 AAAA..." \
+HOSTNAME=my-server \
+SSH_PORT=3742 \
+bash /root/ironclad-init.sh
+```
+
+Override any default the same way — e.g. `SSH_PORT=3742` moves sshd off the default
+port 22, and ironclad opens the new port in the firewall for you (so you won't lock
+yourself out).
 
 Re-running is safe — ironclad inspects the real system state and only changes what's off.
 
@@ -76,9 +99,14 @@ and you pass its **public** half as `SSH_PUBKEY`.
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 
 # generate a new ed25519 private key
-ssh-keygen -t ed25519 -C "my-server" -f ~/.ssh/myserver
+#
+# -C adds a comment/label to the public key, useful for identifying where/why it was created
+# -a sets KDF rounds for passphrase protection; default is usually 16, use 100 for stronger protection
+# -f sets the output path for the private key
+ssh-keygen -t ed25519 -a 100 -C "my-server" -f ~/.ssh/myserver
 
 # (re)derive the public key from the private key
+# note: ssh-keygen already creates .pub automatically during key generation
 ssh-keygen -y -f ~/.ssh/myserver > ~/.ssh/myserver.pub
 
 # lock down the key files
@@ -89,8 +117,14 @@ chmod 644 ~/.ssh/myserver.pub
 Optional tweaks:
 
 ```bash
-ssh-keygen -c -f ~/.ssh/myserver   # change the key comment
-ssh-keygen -p -f ~/.ssh/myserver   # add / change the passphrase
+# optional: change the key comment later
+ssh-keygen -c -f ~/.ssh/myserver
+
+# optional: add/change the passphrase later
+ssh-keygen -p -f ~/.ssh/myserver
+
+# optional: add/change the passphrase later and set KDF rounds
+ssh-keygen -p -a 100 -f ~/.ssh/myserver
 ```
 
 The contents of `~/.ssh/myserver.pub` is what you pass as `SSH_PUBKEY`.
