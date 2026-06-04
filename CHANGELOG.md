@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Step 16 — monitoring: cron health-check (disk / CPU / RAM / service) → webhook or mail alert
 
+## [1.1.0] - 2026-06-04
+
+### Added
+
+- **docker**: container log rotation via `/etc/docker/daemon.json` (`json-file`,
+  `DOCKER_LOG_MAX_SIZE` default `50m` × `DOCKER_LOG_MAX_FILE` default `3`) — caps log growth so a
+  stateless host can't fill its disk. Idempotent; restarts the daemon only when the config changes.
+
 ## [1.0.0] - 2026-06-03
 
 ### Added

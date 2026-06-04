@@ -57,6 +57,8 @@ Everything is set through environment variables. **Only two are required:**
 | `FAIL2BAN_FINDTIME` | — | `10m` | Window in which failures are counted. |
 | `FAIL2BAN_MAXRETRY` | — | `5` | Failures allowed before a ban. |
 | `INSTALL_DOCKER` | — | `yes` | Install Docker + add the user to the `docker` group. `no` to skip. |
+| `DOCKER_LOG_MAX_SIZE` | — | `50m` | Per-container log size before it rotates (`json-file` driver). |
+| `DOCKER_LOG_MAX_FILE` | — | `3` | How many rotated log files to keep per container. |
 | `SETUP_SHELL` | — | `yes` | Colored prompt + aliases for the login user. `no` to skip. |
 
 > To open more firewall ports, edit the `UFW_PORTS` array near the top of `init.sh`
@@ -160,7 +162,7 @@ Run in this order (order matters for lockout safety):
 | 11 | sysctl | kernel/network hardening |
 | 12 | tmp lockdown | `/tmp` + `/dev/shm` noexec,nosuid,nodev |
 | 13 | auditd | audit logging |
-| 14 | docker | Docker engine + user in docker group (optional, `INSTALL_DOCKER=no` to skip) |
+| 14 | docker | Docker engine + log rotation (`daemon.json`) + user in docker group (optional, `INSTALL_DOCKER=no` to skip) |
 | 15 | shell | colored prompt + aliases for the login user (optional, `SETUP_SHELL=no` to skip) |
 | 16 | monitoring | cron health-check → webhook/mail (optional) |
 
