@@ -7,15 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Planned
+
+- Step 17 — monitoring: cron health-check (disk / CPU / RAM / service) → webhook or mail alert
+
+## [1.2.0] - 2026-06-07
+
 ### Added
 
+- **disks** (step 6): mount + persist extra data disks via `DISK_MOUNTS` — a space-separated
+  `DEVICE:MOUNTPOINT[:FSTYPE]` list (e.g. `"/dev/sdb:/data /dev/sdc:/opt:xfs"`), one entry per
+  disk. Formats only a **blank** device (`DISK_FSTYPE` default `ext4`; `xfs`/`btrfs` supported),
+  mounts by `UUID`, and writes an `/etc/fstab` line with `DISK_MOUNT_OPTS` (default
+  `defaults,nofail`). A device that already holds a filesystem is mounted as-is and never
+  reformatted; missing disks are warned and skipped. Idempotent.
 - `check.sh` — read-only post-install health check (curl-and-run). Verifies what `init.sh` set
   up (NTP, firewall, SSH hardening, fail2ban, sysctl, `/tmp` lockdown, auditd, Docker) and prints
   a ✓/✗ summary; changes nothing.
-
-### Planned
-
-- Step 16 — monitoring: cron health-check (disk / CPU / RAM / service) → webhook or mail alert
 
 ## [1.1.0] - 2026-06-04
 

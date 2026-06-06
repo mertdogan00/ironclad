@@ -42,13 +42,23 @@ TIMEZONE="${TIMEZONE:-UTC}"              # system timezone (UTC = global default
 SWAP_SIZE_MB="${SWAP_SIZE_MB:-}"         # swapfile size in MB (empty = auto from RAM)
 SWAP_SWAPPINESS="${SWAP_SWAPPINESS:-60}" # kernel default; override lower (e.g. 10) for latency
 
+# --- disks ---
+# Extra block devices to mount + persist — e.g. cloud volumes you attached in the provider's
+# panel (AWS/Azure/GCP hand you a raw /dev/sdX; you decide where each one lands). Space-separated
+# list of  DEVICE:MOUNTPOINT[:FSTYPE]  entries (FSTYPE defaults to DISK_FSTYPE). A blank device is
+# formatted; one that already holds a filesystem is mounted as-is and NEVER reformatted.
+#   DISK_MOUNTS="/dev/sdb:/data /dev/sdc:/opt:xfs"
+DISK_MOUNTS="${DISK_MOUNTS:-}"
+DISK_FSTYPE="${DISK_FSTYPE:-ext4}"                    # filesystem used when formatting a blank disk
+DISK_MOUNT_OPTS="${DISK_MOUNT_OPTS:-defaults,nofail}" # nofail = box still boots if the disk is absent
+
 # --- docker ---
-INSTALL_DOCKER="${INSTALL_DOCKER:-yes}"            # install docker engine (set to "no" to skip step 14)
+INSTALL_DOCKER="${INSTALL_DOCKER:-yes}"            # install docker engine (set to "no" to skip step 15)
 DOCKER_LOG_MAX_SIZE="${DOCKER_LOG_MAX_SIZE:-50m}"  # per-container log size before it rotates (json-file)
 DOCKER_LOG_MAX_FILE="${DOCKER_LOG_MAX_FILE:-3}"    # how many rotated log files to keep per container
 
 # --- shell ---
-SETUP_SHELL="${SETUP_SHELL:-yes}"        # colored prompt + aliases for the login user ("no" = skip step 15)
+SETUP_SHELL="${SETUP_SHELL:-yes}"        # colored prompt + aliases for the login user ("no" = skip step 16)
 
 # ==========================================================================
 # Helpers
@@ -106,7 +116,7 @@ ensure_packages() {
 # Steps  (grouped into #region blocks so VSCode can fold a whole section)
 # ==========================================================================
 
-#region base — timesync · update_system · base_packages · auto_updates · swap
+#region base — timesync · update_system · base_packages · auto_updates · swap · disks
 
 # 1. Timezone (UTC) + NTP, so the clock is correct before any TLS/apt work.
 timesync() {
@@ -263,11 +273,93 @@ swap() {
   fi
 }
 
+# 6. Extra data disks: format-if-blank, mount, and persist in fstab (by UUID, nofail).
+#    Cloud providers attach raw block devices and let you pick where each lands; DISK_MOUNTS is
+#    that map — a list of DEVICE:MOUNTPOINT[:FSTYPE] entries, one per disk, however many you add.
+#    SAFETY: a device that already holds a filesystem is mounted as-is and NEVER reformatted —
+#    only a truly blank device is mkfs'd, so re-running can't wipe data.
+disks() {
+  step "Data disks (mount + fstab)"
+
+  if [[ -z "$DISK_MOUNTS" ]]; then
+    info "DISK_MOUNTS not set — no extra disks to mount"
+    return
+  fi
+
+  # split the space-separated list into entries (each: DEVICE:MOUNTPOINT[:FSTYPE])
+  local entries=() entry
+  read -r -a entries <<< "$DISK_MOUNTS"
+
+  local fstab="/etc/fstab" dev rest mnt fstype existing_type uuid
+  for entry in "${entries[@]}"; do
+    # parse DEVICE : MOUNTPOINT [ : FSTYPE ]
+    dev="${entry%%:*}"           # up to the first colon
+    rest="${entry#*:}"           # everything after the first colon
+    mnt="${rest%%:*}"            # mountpoint = up to the next colon
+    if [[ "$rest" == *:* ]]; then fstype="${rest#*:}"; else fstype="$DISK_FSTYPE"; fi
+
+    # shape check: need a device, a colon, and an absolute mountpoint
+    if [[ "$dev" == "$entry" || -z "$mnt" || "$mnt" != /* ]]; then
+      warn "skipping malformed entry '${entry}' (want DEVICE:/mountpoint[:fstype])"
+      continue
+    fi
+
+    # the device must actually be attached
+    if [[ ! -b "$dev" ]]; then
+      warn "skipping ${entry}: ${dev} is not a block device (disk not attached?)"
+      continue
+    fi
+
+    # the right mkfs tool for this fstype (ext4 ships by default; xfs/btrfs need a package)
+    case "$fstype" in
+      ext4)  ensure_packages e2fsprogs ;;
+      xfs)   ensure_packages xfsprogs ;;
+      btrfs) ensure_packages btrfs-progs ;;
+      *) warn "skipping ${entry}: unsupported fstype '${fstype}' (want ext4|xfs|btrfs)"; continue ;;
+    esac
+
+    # SAFETY: format only a blank device — blkid prints the fs type when one already exists
+    existing_type=$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)
+    if [[ -n "$existing_type" ]]; then
+      ok "${dev} already has a filesystem (${existing_type}) — not reformatting"
+    elif findmnt -S "$dev" >/dev/null 2>&1; then
+      warn "skipping ${dev}: looks blank but is currently mounted — not touching it"
+      continue
+    else
+      info "formatting ${dev} as ${fstype}…"
+      mkfs."$fstype" -q "$dev"
+      ok "formatted ${dev} (${fstype})"
+    fi
+
+    # mount by UUID — stable across reboots even if the kernel reshuffles /dev/sdX letters
+    uuid=$(blkid -s UUID -o value "$dev" 2>/dev/null || true)
+    [[ -n "$uuid" ]] || { warn "skipping ${dev}: could not read its UUID"; continue; }
+
+    install -d "$mnt"            # create the mountpoint
+
+    # persist: one fstab line per mountpoint (idempotent — match on the mountpoint field)
+    if awk -v m="$mnt" '$1!~/^#/ && $2==m {found=1} END{exit !found}' "$fstab"; then
+      ok "fstab entry already present (${mnt})"
+    else
+      printf '%s\n' "UUID=${uuid} ${mnt} ${fstype} ${DISK_MOUNT_OPTS} 0 2" >> "$fstab"
+      ok "fstab entry added (${dev} -> ${mnt})"
+    fi
+
+    # apply now: skip if already mounted here, else mount from the fstab line we just ensured
+    if mountpoint -q "$mnt"; then
+      ok "already mounted (${mnt})"
+    else
+      mount "$mnt"
+      ok "mounted ${dev} at ${mnt}"
+    fi
+  done
+}
+
 #endregion
 
 #region identity — hostname · create_user
 
-# 6. Hostname + a clean /etc/hosts (only when HOSTNAME is explicitly given).
+# 7. Hostname + a clean /etc/hosts (only when HOSTNAME is explicitly given).
 hostname() {
   step "Hostname"
 
@@ -305,7 +397,7 @@ hostname() {
   fi
 }
 
-# 7. Create a passwordless sudo user.
+# 8. Create a passwordless sudo user.
 create_user() {
   step "User: ${USERNAME}"
   [[ -n "$USERNAME" ]] || die "USERNAME is not set (USERNAME=name sudo -E bash init.sh)"
@@ -342,7 +434,7 @@ create_user() {
 
 #region network_security — firewall · ssh · fail2ban
 
-# 8. Firewall: default-deny incoming, allow outgoing, open only the SSH port.
+# 9. Firewall: default-deny incoming, allow outgoing, open only the SSH port.
 firewall() {
   step "Firewall (ufw)"
 
@@ -374,7 +466,7 @@ firewall() {
   fi
 }
 
-# 9. SSH hardening: key-only, no root, custom port. Lockout-safe — a key is installed first.
+# 10. SSH hardening: key-only, no root, custom port. Lockout-safe — a key is installed first.
 ssh() {
   step "SSH hardening"
   [[ -n "$USERNAME" ]] || die "USERNAME is not set"
@@ -419,7 +511,7 @@ ssh() {
   fi
 }
 
-# 10. fail2ban: ban brute-force SSH IPs. Reads journald (no rsyslog/auth.log on this host).
+# 11. fail2ban: ban brute-force SSH IPs. Reads journald (no rsyslog/auth.log on this host).
 fail2ban() {
   step "fail2ban (SSH brute-force protection)"
 
@@ -481,7 +573,7 @@ fail2ban() {
 
 #region system_hardening — sysctl_hardening · tmp_lockdown · auditd
 
-# 11. Kernel/network sysctl hardening — anti-spoof, anti-flood, info-leak.
+# 12. Kernel/network sysctl hardening — anti-spoof, anti-flood, info-leak.
 #     NB: ip_forward is left untouched on purpose (Docker needs it = 1).
 sysctl_hardening() {
   step "Sysctl hardening"
@@ -524,7 +616,7 @@ sysctl_hardening() {
   fi
 }
 
-# 12. Lock down world-writable tmpfs: /tmp + /dev/shm -> noexec,nosuid,nodev.
+# 13. Lock down world-writable tmpfs: /tmp + /dev/shm -> noexec,nosuid,nodev.
 #     noexec = no running dropped payloads, nosuid = setuid bits ignored, nodev = no device nodes.
 #     On Debian 13 both are already tmpfs (systemd); we only add the hardening options.
 tmp_lockdown() {
@@ -554,7 +646,7 @@ tmp_lockdown() {
   done
 }
 
-# 13. Audit logging: kernel-level trail of who touched the security-critical files.
+# 14. Audit logging: kernel-level trail of who touched the security-critical files.
 #     Focused baseline (high signal, low noise) — auditd keeps its own file, self-rotated.
 auditd() {
   step "Audit logging (auditd)"
@@ -635,7 +727,7 @@ auditd() {
 
 #region optional — docker · shell · monitoring
 
-# 14. Docker engine (optional) — official get.docker.com installer, then add the login user
+# 15. Docker engine (optional) — official get.docker.com installer, then add the login user
 #     to the docker group. NB: docker `-p` publishing bypasses ufw (writes iptables directly);
 #     left as-is on purpose (caller is aware). `type -P` is used (not `command -v`) because this
 #     function is named `docker` and would otherwise shadow the lookup.
@@ -701,7 +793,7 @@ docker() {
   fi
 }
 
-# 15. Shell niceties (optional) — colored prompt + handy aliases for the login user only.
+# 16. Shell niceties (optional) — colored prompt + handy aliases for the login user only.
 #     Written as a marker-delimited managed block in the user's ~/.bashrc (idempotent: the block
 #     is compared and rewritten in place, never duplicated).
 shell() {
@@ -795,29 +887,30 @@ base() {                       # ---- base ----
   base_packages                # 3  TLS/fetch essentials + ops tools
   auto_updates                 # 4  unattended-upgrades + needrestart
   swap                         # 5  swapfile + swappiness (always)
+  disks                        # 6  format/mount/persist extra data disks (DISK_MOUNTS)
 }
 
 identity() {                   # ---- identity ----
-  hostname                     # 6  hostname + /etc/hosts
-  create_user                  # 7  sudo user, passwordless
+  hostname                     # 7  hostname + /etc/hosts
+  create_user                  # 8  sudo user, passwordless
 }
 
 network_security() {           # ---- network security ----
-  firewall                     # 8  ufw default-deny + allow ssh
-  ssh                          # 9  harden sshd (port, no root, key-only)
-  fail2ban                     # 10 ssh brute-force protection
+  firewall                     # 9  ufw default-deny + allow ssh
+  ssh                          # 10 harden sshd (port, no root, key-only)
+  fail2ban                     # 11 ssh brute-force protection
 }
 
 system_hardening() {           # ---- system hardening ----
-  sysctl_hardening             # 11 kernel/network sysctl hardening
-  tmp_lockdown                 # 12 /tmp + /dev/shm noexec,nosuid,nodev
-  auditd                       # 13 audit logging
+  sysctl_hardening             # 12 kernel/network sysctl hardening
+  tmp_lockdown                 # 13 /tmp + /dev/shm noexec,nosuid,nodev
+  auditd                       # 14 audit logging
 }
 
 optional() {                   # ---- optional ----
-  docker                       # 14 docker engine (INSTALL_DOCKER=no to skip)
-  shell                        # 15 prompt + aliases (SETUP_SHELL=no to skip)
-  # monitoring                 # 16 cron health-check -> webhook/mail alert
+  docker                       # 15 docker engine (INSTALL_DOCKER=no to skip)
+  shell                        # 16 prompt + aliases (SETUP_SHELL=no to skip)
+  # monitoring                 # 17 cron health-check -> webhook/mail alert
 }
 
 # ==========================================================================

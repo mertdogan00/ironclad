@@ -54,6 +54,7 @@ USERNAME=myuser \
 SSH_PUBKEY="ssh-ed25519 AAAA..." \
 HOSTNAME=my-server \
 SSH_PORT=3742 \
+DISK_MOUNTS="/dev/sdb:/data /dev/sdc:/opt:xfs" \
 bash /root/ironclad-init.sh
 ```
 
@@ -89,6 +90,9 @@ Everything is set through environment variables. **Only two are required:**
 | `TIMEZONE` | — | `UTC` | System timezone. |
 | `SWAP_SIZE_MB` | — | auto from RAM | Swapfile size in MB. Auto: ≤2G→2×RAM, 2–4G→RAM, >4G→4G cap. |
 | `SWAP_SWAPPINESS` | — | `60` | `vm.swappiness` (lower, e.g. `10`, favors RAM over swap). |
+| `DISK_MOUNTS` | — | *(none)* | Extra data disks to mount + persist. Space-separated `DEVICE:MOUNTPOINT[:FSTYPE]` list — e.g. `"/dev/sdb:/data /dev/sdc:/opt:xfs"`. See [Data disks](#data-disks) below. |
+| `DISK_FSTYPE` | — | `ext4` | Filesystem used when formatting a **blank** disk (`ext4`, `xfs`, or `btrfs`). |
+| `DISK_MOUNT_OPTS` | — | `defaults,nofail` | fstab mount options. `nofail` lets the box still boot if a disk is detached. |
 | `FAIL2BAN_BANTIME` | — | `1h` | How long a banned IP stays out. |
 | `FAIL2BAN_FINDTIME` | — | `10m` | Window in which failures are counted. |
 | `FAIL2BAN_MAXRETRY` | — | `5` | Failures allowed before a ban. |
@@ -99,6 +103,35 @@ Everything is set through environment variables. **Only two are required:**
 
 > To open more firewall ports, edit the `UFW_PORTS` array near the top of `init.sh`
 > (defaults to `SSH_PORT`, `80`, `443`).
+
+### Data disks
+
+Cloud providers (AWS, Azure, GCP, …) hand you a raw block device when you attach a volume and
+let you decide where it lands — ironclad does the in-server half: format (only if blank), mount,
+and persist in `/etc/fstab` so it survives reboots. Add as many disks as you like; `DISK_MOUNTS`
+is a space-separated list of `DEVICE:MOUNTPOINT[:FSTYPE]` entries, one per disk:
+
+```bash
+USERNAME=mert \
+SSH_PUBKEY="ssh-ed25519 AAAA..." \
+DISK_MOUNTS="/dev/sdb:/data /dev/sdc:/opt:xfs" \
+sudo -E bash init.sh
+```
+
+For each entry ironclad:
+
+1. **Checks the device is attached** — a missing `/dev/sdX` is warned about and skipped (the run
+   keeps going), so the whole hardening pass never fails just because a disk isn't there yet.
+2. **Formats only a blank disk.** If the device already holds a filesystem it's mounted as-is and
+   **never reformatted** — re-running is safe and can't wipe your data. `FSTYPE` (per-entry, or the
+   `DISK_FSTYPE` default) is used only when formatting a fresh disk. Supported: `ext4`, `xfs`, `btrfs`.
+3. **Mounts by `UUID`** (not `/dev/sdX`, which the kernel can reshuffle on reboot) and writes one
+   `/etc/fstab` line with `DISK_MOUNT_OPTS` (`defaults,nofail` by default — `nofail` keeps the box
+   bootable even if the disk is later detached).
+
+The step is idempotent like the rest: existing fstab entries and already-mounted points are left
+alone. To mount one disk as `/data` and another as `/opt`, that's just
+`DISK_MOUNTS="/dev/sdb:/data /dev/sdc:/opt"`.
 
 ## Connecting over SSH
 
@@ -201,19 +234,20 @@ Run in this order (order matters for lockout safety):
 | 3 | base packages | curl, ca-certificates, gnupg + handy tools |
 | 4 | auto-updates | unattended-upgrades (automatic security patches) |
 | 5 | swap | swapfile + swappiness |
-| 6 | hostname | hostname + clean `/etc/hosts` (set `HOSTNAME`; empty = skip) |
-| 7 | user | passwordless sudo user |
-| 8 | firewall | ufw default-deny + allow `UFW_PORTS` (SSH + 80/443 by default) |
-| 9 | ssh | sshd hardening (port, no root, key-only) — needs `SSH_PUBKEY` |
-| 10 | fail2ban | SSH brute-force protection |
-| 11 | sysctl | kernel/network hardening |
-| 12 | tmp lockdown | `/tmp` + `/dev/shm` noexec,nosuid,nodev |
-| 13 | auditd | audit logging |
-| 14 | docker | Docker engine + log rotation (`daemon.json`) + user in docker group (optional, `INSTALL_DOCKER=no` to skip) |
-| 15 | shell | colored prompt + aliases for the login user (optional, `SETUP_SHELL=no` to skip) |
-| 16 | monitoring | cron health-check → webhook/mail (optional) |
+| 6 | disks | format (if blank) + mount + persist extra data disks by UUID (optional, set `DISK_MOUNTS`) |
+| 7 | hostname | hostname + clean `/etc/hosts` (set `HOSTNAME`; empty = skip) |
+| 8 | user | passwordless sudo user |
+| 9 | firewall | ufw default-deny + allow `UFW_PORTS` (SSH + 80/443 by default) |
+| 10 | ssh | sshd hardening (port, no root, key-only) — needs `SSH_PUBKEY` |
+| 11 | fail2ban | SSH brute-force protection |
+| 12 | sysctl | kernel/network hardening |
+| 13 | tmp lockdown | `/tmp` + `/dev/shm` noexec,nosuid,nodev |
+| 14 | auditd | audit logging |
+| 15 | docker | Docker engine + log rotation (`daemon.json`) + user in docker group (optional, `INSTALL_DOCKER=no` to skip) |
+| 16 | shell | colored prompt + aliases for the login user (optional, `SETUP_SHELL=no` to skip) |
+| 17 | monitoring | cron health-check → webhook/mail (optional) |
 
-> Status: built incrementally. Steps 1–15 are implemented so far (only step 16 monitoring left).
+> Status: built incrementally. Steps 1–16 are implemented so far (only step 17 monitoring left).
 > See [CHANGELOG.md](CHANGELOG.md) for released versions.
 
 ## Development
