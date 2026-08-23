@@ -60,6 +60,20 @@ DOCKER_LOG_MAX_FILE="${DOCKER_LOG_MAX_FILE:-3}"    # how many rotated log files 
 # --- shell ---
 SETUP_SHELL="${SETUP_SHELL:-yes}"        # colored prompt + aliases for the login user ("no" = skip step 16)
 
+# --- k3s (optional) ---
+# Turn a hardened host into a Kubernetes node. Off by default: set K3S_ROLE to install, leave it
+# empty and ironclad just hardens (k3s is never touched). Generic and provider-agnostic: every value
+# arrives via env (cloud-init / user-data on AWS, GCP, Azure or bare metal), so no secret is baked in.
+K3S_ROLE="${K3S_ROLE:-}"                    # "server" | "agent"  (empty = skip k3s entirely)
+K3S_VERSION="${K3S_VERSION:-}"              # pin an exact version e.g. v1.31.4+k3s1 (empty = installer "stable")
+K3S_URL="${K3S_URL:-}"                      # https://<server-private-ip>:6443 (required for an agent or joining server)
+K3S_TOKEN="${K3S_TOKEN:-}"                  # cluster join secret (required for an agent or joining server)
+K3S_CLUSTER_INIT="${K3S_CLUSTER_INIT:-no}" # "yes" on the FIRST server only: start the embedded-etcd HA cluster
+K3S_NODE_IP="${K3S_NODE_IP:-}"             # this node's private IP for node-to-node (empty = k3s autodetect)
+K3S_TAINT_SERVER="${K3S_TAINT_SERVER:-yes}" # taint a server so app workloads stay off the control-plane
+K3S_TRUSTED_CIDR="${K3S_TRUSTED_CIDR:-}"   # open cluster ports to THIS network only e.g. 10.0.0.0/16 (empty = leave ufw)
+K3S_EXTRA_ARGS="${K3S_EXTRA_ARGS:-}"       # escape hatch: extra flags appended to the k3s install exec
+
 # ==========================================================================
 # Helpers
 # ==========================================================================
@@ -875,6 +889,91 @@ shell() {
   fi
 }
 
+# 17. K3s (optional): turn this hardened host into a Kubernetes node. Generic by design, the role and
+#     every join detail come from env (K3S_*), so the same script brings up a control-plane server, an
+#     HA-joining server, or a stateless agent, on any cloud. Uses k3s' bundled containerd, so no docker
+#     is needed on cluster nodes (set INSTALL_DOCKER=no there). Skipped when K3S_ROLE is empty.
+#     Idempotent: an already-running node service is left as-is.
+k3s() {
+  step "K3s"
+
+  if [[ -z "$K3S_ROLE" ]]; then
+    info "K3S_ROLE unset, skipping k3s"
+    return
+  fi
+  case "$K3S_ROLE" in
+    server|agent) ;;
+    *) die "K3S_ROLE must be 'server' or 'agent' (got '${K3S_ROLE}')" ;;
+  esac
+
+  # cluster ports, opened to the trusted private network ONLY (never the world). ufw is already active
+  # (firewall step ran earlier); with no CIDR we leave ufw alone and rely on the cloud security group.
+  #   6443 API · 2379:2380 etcd (HA) · 8472/udp flannel vxlan · 10250 kubelet
+  if [[ -n "$K3S_TRUSTED_CIDR" ]]; then
+    local rule
+    local -a k3s_rules=(
+      "allow from ${K3S_TRUSTED_CIDR} to any port 6443 proto tcp"
+      "allow from ${K3S_TRUSTED_CIDR} to any port 2379:2380 proto tcp"
+      "allow from ${K3S_TRUSTED_CIDR} to any port 8472 proto udp"
+      "allow from ${K3S_TRUSTED_CIDR} to any port 10250 proto tcp"
+    )
+    for rule in "${k3s_rules[@]}"; do
+      if ufw show added | grep -qF "ufw ${rule}"; then
+        ok "cluster port rule already set (${rule})"
+      else
+        # shellcheck disable=SC2086
+        ufw ${rule} >/dev/null
+        ok "cluster port rule added (${rule})"
+      fi
+    done
+  else
+    warn "K3S_TRUSTED_CIDR unset: not opening cluster ports in ufw (relying on the cloud firewall)"
+  fi
+
+  # already a node? leave it. Real-state idempotency: re-running with new env does not reinstall.
+  local svc="k3s"
+  [[ "$K3S_ROLE" == "agent" ]] && svc="k3s-agent"
+  if systemctl is-active --quiet "$svc" 2>/dev/null; then
+    ok "k3s ${K3S_ROLE} already running (${svc})"
+    return
+  fi
+
+  # assemble the install command: role first, then role-specific flags. Secrets ride the args, and the
+  # version (if pinned) rides INSTALL_K3S_VERSION for the get.k3s.io installer.
+  local -a exec_args=("$K3S_ROLE")
+  [[ -n "$K3S_NODE_IP" ]] && exec_args+=("--node-ip" "$K3S_NODE_IP")
+
+  if [[ "$K3S_ROLE" == "server" ]]; then
+    if [[ "$K3S_CLUSTER_INIT" == "yes" ]]; then
+      exec_args+=("--cluster-init")
+      if [[ -n "$K3S_TOKEN" ]]; then
+        exec_args+=("--token" "$K3S_TOKEN")
+      else
+        warn "K3S_CLUSTER_INIT=yes without K3S_TOKEN: k3s will generate one (read it from /var/lib/rancher/k3s/server/node-token)"
+      fi
+    else
+      [[ -n "$K3S_URL" && -n "$K3S_TOKEN" ]] \
+        || die "a joining server needs K3S_URL + K3S_TOKEN (or set K3S_CLUSTER_INIT=yes to start a cluster)"
+      exec_args+=("--server" "$K3S_URL" "--token" "$K3S_TOKEN")
+    fi
+    [[ "$K3S_TAINT_SERVER" == "yes" ]] && exec_args+=("--node-taint" "CriticalAddonsOnly=true:NoExecute")
+  else
+    [[ -n "$K3S_URL" && -n "$K3S_TOKEN" ]] || die "an agent needs K3S_URL + K3S_TOKEN"
+    exec_args+=("--server" "$K3S_URL" "--token" "$K3S_TOKEN")
+  fi
+
+  # shellcheck disable=SC2206
+  [[ -n "$K3S_EXTRA_ARGS" ]] && exec_args+=($K3S_EXTRA_ARGS)
+
+  info "installing k3s (${K3S_ROLE}${K3S_VERSION:+ ${K3S_VERSION}}) via get.k3s.io…"
+  if [[ -n "$K3S_VERSION" ]]; then
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - "${exec_args[@]}" >/dev/null
+  else
+    curl -sfL https://get.k3s.io | sh -s - "${exec_args[@]}" >/dev/null
+  fi
+  ok "k3s ${K3S_ROLE} installed & started (${svc})"
+}
+
 #endregion
 
 # ==========================================================================
@@ -910,7 +1009,8 @@ system_hardening() {           # ---- system hardening ----
 optional() {                   # ---- optional ----
   docker                       # 15 docker engine (INSTALL_DOCKER=no to skip)
   shell                        # 16 prompt + aliases (SETUP_SHELL=no to skip)
-  # monitoring                 # 17 cron health-check -> webhook/mail alert
+  k3s                          # 17 k3s server/agent node (set K3S_ROLE to enable)
+  # monitoring                 # 18 cron health-check -> webhook/mail alert
 }
 
 # ==========================================================================
@@ -923,7 +1023,7 @@ main() {
   identity                     # steps 6-7
   network_security             # steps 8-10
   system_hardening             # steps 11-13
-  optional                     # steps 14-16
+  optional                     # steps 15-17
 }
 
 main "$@"

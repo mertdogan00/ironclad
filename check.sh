@@ -23,8 +23,12 @@ section() { printf '\n%s== %s ==%s\n' "$blu" "$1" "$rst"; }
 # check "label" cmd args...  ->  ✓ if the command succeeds, ✗ otherwise
 check() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$d"; else fail "$d"; fi; }
 
-# predicates for the non-trivial checks
+# predicates for the non-trivial checks. Called indirectly via `check` (as its "$@"), which the
+# linter can't trace, so it reads them as unused/unreachable; SC2317 and SC2329 are both
+# waived per-function.
+# shellcheck disable=SC2317,SC2329
 sysctl_equals()  { [[ "$(sysctl -n "$1" 2>/dev/null)" == "$2" ]]; }
+# shellcheck disable=SC2317,SC2329
 mount_hardened() { local o; o=$(findmnt -no OPTIONS "$1" 2>/dev/null) || return 1
                    [[ "$o" == *noexec* && "$o" == *nosuid* && "$o" == *nodev* ]]; }
 
@@ -77,6 +81,20 @@ if command -v docker >/dev/null 2>&1; then
   check "log rotation set"           bash -c 'grep -q json-file /etc/docker/daemon.json 2>/dev/null'
 else
   skip "docker not installed"
+fi
+
+section "K3s (optional)"
+if command -v k3s >/dev/null 2>&1; then
+  if systemctl is-active --quiet k3s-agent 2>/dev/null; then
+    pass "k3s agent node running"
+  elif systemctl is-active --quiet k3s 2>/dev/null; then
+    pass "k3s server node running"
+    check "control-plane node Ready" bash -c 'k3s kubectl get nodes 2>/dev/null | grep -qw Ready'
+  else
+    fail "k3s installed but no active k3s/k3s-agent service"
+  fi
+else
+  skip "k3s not installed"
 fi
 
 printf '\n%s── %d passed · %d failed · %d skipped ──%s\n' "$blu" "$passed" "$failed" "$skipped" "$rst"

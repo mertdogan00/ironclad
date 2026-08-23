@@ -100,6 +100,15 @@ Everything is set through environment variables. **Only two are required:**
 | `DOCKER_LOG_MAX_SIZE` | — | `50m` | Per-container log size before it rotates (`json-file` driver). |
 | `DOCKER_LOG_MAX_FILE` | — | `3` | How many rotated log files to keep per container. |
 | `SETUP_SHELL` | — | `yes` | Colored prompt + aliases for the login user. `no` to skip. |
+| `K3S_ROLE` | - | *(none)* | `server` or `agent`. Empty skips k3s entirely (ironclad just hardens); setting it makes the host a Kubernetes node. |
+| `K3S_VERSION` | - | *(stable)* | Pin an exact k3s version (e.g. `v1.31.4+k3s1`) for reproducible nodes. |
+| `K3S_URL` | - | *(none)* | `https://<server-private-ip>:6443`. Required for an `agent` or a joining `server`. |
+| `K3S_TOKEN` | - | *(none)* | Cluster join secret. Required for an `agent` or a joining `server`. |
+| `K3S_CLUSTER_INIT` | - | `no` | `yes` on the **first** server only, to start the embedded-etcd HA cluster. |
+| `K3S_NODE_IP` | - | *(auto)* | This node's private IP (`--node-ip`), so nodes talk over the provider network, not the pod overlay. |
+| `K3S_TAINT_SERVER` | - | `yes` | Taint the server so application workloads stay off the control-plane. |
+| `K3S_TRUSTED_CIDR` | - | *(none)* | Open the cluster ports (6443, etcd, flannel, kubelet) to this network only, e.g. `10.0.0.0/16`. Empty leaves ufw untouched. |
+| `K3S_EXTRA_ARGS` | - | *(none)* | Extra flags appended to the k3s install exec. |
 
 > To open more firewall ports, edit the `UFW_PORTS` array near the top of `init.sh`
 > (defaults to `SSH_PORT`, `80`, `443`).
@@ -132,6 +141,47 @@ For each entry ironclad:
 The step is idempotent like the rest: existing fstab entries and already-mounted points are left
 alone. To mount one disk as `/data` and another as `/opt`, that's just
 `DISK_MOUNTS="/dev/sdb:/data /dev/sdc:/opt"`.
+
+### Kubernetes (K3s)
+
+ironclad can turn the hardened host into a [K3s](https://k3s.io/) node, so the same script that
+secures a box also brings it into a cluster. It stays generic: the role and every join detail come
+from env, nothing cloud-specific or cluster-specific is baked in, so it runs the same on AWS, GCP,
+Azure or bare metal (typically from cloud-init / user-data). K3s ships its own containerd, so set
+`INSTALL_DOCKER=no` on cluster nodes.
+
+First server, starts a new HA cluster with embedded etcd:
+
+```bash
+USERNAME=mert SSH_PUBKEY="ssh-ed25519 AAAA..." \
+INSTALL_DOCKER=no \
+K3S_ROLE=server K3S_CLUSTER_INIT=yes \
+K3S_TOKEN="a-long-shared-secret" \
+K3S_TRUSTED_CIDR="10.0.0.0/16" \
+sudo -E bash init.sh
+```
+
+Additional server, joins as control-plane for HA:
+
+```bash
+K3S_ROLE=server \
+K3S_URL="https://10.0.1.10:6443" K3S_TOKEN="a-long-shared-secret" \
+K3S_TRUSTED_CIDR="10.0.0.0/16" INSTALL_DOCKER=no \
+sudo -E bash init.sh
+```
+
+Worker, joins as a stateless agent:
+
+```bash
+K3S_ROLE=agent \
+K3S_URL="https://10.0.1.10:6443" K3S_TOKEN="a-long-shared-secret" \
+K3S_TRUSTED_CIDR="10.0.0.0/16" INSTALL_DOCKER=no \
+sudo -E bash init.sh
+```
+
+Pin `K3S_VERSION` (e.g. `v1.31.4+k3s1`) across all nodes so a cluster is reproducible, and set
+`K3S_NODE_IP` to the node's private address when you want node-to-node traffic on the provider
+network rather than the pod overlay.
 
 ## Connecting over SSH
 
@@ -245,9 +295,10 @@ Run in this order (order matters for lockout safety):
 | 14 | auditd | audit logging |
 | 15 | docker | Docker engine + log rotation (`daemon.json`) + user in docker group (optional, `INSTALL_DOCKER=no` to skip) |
 | 16 | shell | colored prompt + aliases for the login user (optional, `SETUP_SHELL=no` to skip) |
-| 17 | monitoring | cron health-check → webhook/mail (optional) |
+| 17 | k3s | K3s server/agent node (optional): starts or joins a Kubernetes cluster, set `K3S_ROLE` |
+| 18 | monitoring | cron health-check → webhook/mail (optional) |
 
-> Status: built incrementally. Steps 1–16 are implemented so far (only step 17 monitoring left).
+> Status: built incrementally. Steps 1-17 are implemented so far (only step 18, monitoring, left).
 > See [CHANGELOG.md](CHANGELOG.md) for released versions.
 
 ## Development
