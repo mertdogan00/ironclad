@@ -281,7 +281,7 @@ Run in this order (order matters for lockout safety):
 |---|------|------|
 | 1 | timesync | Timezone (UTC) + NTP |
 | 2 | update | apt update / upgrade / autoremove / clean |
-| 3 | base packages | curl, ca-certificates, gnupg + handy tools |
+| 3 | base packages | curl, ca-certificates, gnupg, git, make, unzip, rsync, tree, ripgrep, dnsutils + handy tools |
 | 4 | auto-updates | unattended-upgrades (automatic security patches) |
 | 5 | swap | swapfile + swappiness |
 | 6 | disks | format (if blank) + mount + persist extra data disks by UUID (optional, set `DISK_MOUNTS`) |

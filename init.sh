@@ -170,11 +170,21 @@ base_packages() {
     ca-certificates   # TLS trust roots (apt/curl over https)
     curl              # fetch files/APIs (the docker step uses it)
     gnupg             # apt repo keys (gpg --dearmor in the docker step)
+
     btop              # system monitor (cpu/ram/disk/net)
     ncdu              # interactive disk usage analyzer
     tmux              # persistent terminal sessions
     lsof              # which process holds a port/file
     jq                # JSON wrangling (health checks, docker inspect)
+
+    make              # run project build and automation targets
+    unzip             # extract zip archives
+    rsync             # efficient local/remote file synchronization
+    git               # clone repositories and manage source code
+    tree              # compact directory tree overview
+
+    ripgrep           # fast recursive code/text search (rg)
+    dnsutils          # DNS troubleshooting tools (dig/nslookup)
   )
   ensure_packages "${packages[@]}"
 }

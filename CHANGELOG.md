@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `git`, `make`, `unzip`, `rsync`, `tree`, `ripgrep`, and `dnsutils` to the baseline packages
+  installed on every host.
+
 ### Planned
 
 - Step 18, monitoring: cron health-check (disk / CPU / RAM / service) to a webhook or mail alert
