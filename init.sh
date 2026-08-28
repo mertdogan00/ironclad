@@ -976,6 +976,13 @@ k3s() {
   [[ -n "$K3S_EXTRA_ARGS" ]] && exec_args+=($K3S_EXTRA_ARGS)
 
   info "installing k3s (${K3S_ROLE}${K3S_VERSION:+ ${K3S_VERSION}}) via get.k3s.io…"
+
+  # ironclad drives k3s via FLAGS (exec_args); its control vars share the K3S_
+  # prefix with real k3s env vars (k3s reads K3S_CLUSTER_INIT as a bool and dies
+  # on "yes"). Strip them so the get.k3s.io installer does not capture them into
+  # the service env. K3S_VERSION is kept — the install line below still uses it.
+  unset K3S_ROLE K3S_CLUSTER_INIT K3S_NODE_IP K3S_TAINT_SERVER K3S_TRUSTED_CIDR K3S_EXTRA_ARGS K3S_URL K3S_TOKEN
+
   if [[ -n "$K3S_VERSION" ]]; then
     curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - "${exec_args[@]}" >/dev/null
   else
